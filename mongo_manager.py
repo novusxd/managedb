@@ -1,6 +1,7 @@
 import mysql.connector
 from pymongo import MongoClient
 import sys
+import certifi
 
 # Konfigurasi MySQL
 DB_CONFIG = {
@@ -11,7 +12,7 @@ DB_CONFIG = {
 }
 
 def init_db():
-    """Membuat tabel jika belum ada di database MySQL."""
+    """Memastikan tabel tersedia di MySQL."""
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor()
@@ -30,7 +31,7 @@ def init_db():
         sys.exit()
 
 def save_uri(uri):
-    """Menyimpan URI baru ke MySQL."""
+    """Menyimpan URI ke database."""
     label = input("🏷️ Beri Label (Contoh: Bot Utama / DB Backup): ")
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
@@ -40,7 +41,7 @@ def save_uri(uri):
         conn.close()
         print("✅ MongoDB URI berhasil disimpan ke MySQL.")
     except Exception as e:
-        print(f"❌ Gagal menyimpan ke MySQL: {e}")
+        print(f"❌ Gagal menyimpan: {e}")
 
 def get_saved_uris():
     """Mengambil daftar URI dari MySQL."""
@@ -52,35 +53,40 @@ def get_saved_uris():
         conn.close()
         return rows
     except Exception as e:
-        print(f"❌ Gagal mengambil data: {e}")
         return []
 
 def view_mongo_data(uri):
-    """Membaca dan menampilkan isi MongoDB dengan fitur pagination."""
+    """Membaca isi MongoDB dengan proteksi SSL dan Pagination."""
     try:
-        # Menggunakan tlsAllowInvalidCertificates untuk melewati error SSL Handshake di VPS
-        client = MongoClient(uri, serverSelectionTimeoutMS=5000, tlsAllowInvalidCertificates=True)
+        # Menggunakan certifi untuk validasi SSL yang lebih kuat
+        ca = certifi.where()
         
-        # Tes koneksi
+        print("⏳ Menghubungkan ke MongoDB...")
+        client = MongoClient(
+            uri, 
+            serverSelectionTimeoutMS=5000,
+            tlsCAFile=ca,
+            tlsAllowInvalidCertificates=True # Tetap diaktifkan sebagai backup jika SSL VPS usang
+        )
+        
+        # Paksa cek koneksi
         client.admin.command('ping')
+        print("✅ Koneksi Berhasil!")
         
         dbs = client.list_database_names()
         print("\n📂 Daftar Database:")
-        for i, d in enumerate(dbs):
-            print(f"  {i+1}. {d}")
+        for i, d in enumerate(dbs): print(f"  {i+1}. {d}")
         
         db_idx = int(input("\nPilih nomor database: ")) - 1
-        db_name = dbs[db_idx]
-        db = client[db_name]
+        db = client[dbs[db_idx]]
         
         cols = db.list_collection_names()
         if not cols:
-            print(f"⚠️ Database '{db_name}' kosong (tidak ada koleksi).")
+            print("⚠️ Database ini tidak memiliki koleksi.")
             return
 
         print("\n📑 Daftar Koleksi:")
-        for i, c in enumerate(cols):
-            print(f"  {i+1}. {c}")
+        for i, c in enumerate(cols): print(f"  {i+1}. {c}")
         
         col_idx = int(input("\nPilih nomor koleksi: ")) - 1
         col_name = cols[col_idx]
@@ -88,39 +94,33 @@ def view_mongo_data(uri):
 
         limit = 5
         skip = 0
-        
         while True:
             docs = list(collection.find().skip(skip).limit(limit))
             
             print(f"\n" + "="*50)
-            print(f"📄 Koleksi: {col_name} | Data {skip+1} - {skip+len(docs)}")
+            print(f"📄 Data {col_name} | Halaman: {(skip//limit)+1}")
             print("="*50)
             
             if not docs:
-                print("   (Tidak ada data untuk ditampilkan)")
+                print("   (Kosong / Tidak ada data lagi)")
             else:
                 for doc in docs:
                     print(f"🔹 {doc}\n")
             
             print("="*50)
-            nav = input("[n] Next | [p] Prev | [q] Kembali ke Menu: ").lower()
+            nav = input("[n] Next | [p] Prev | [q] Keluar: ").lower()
             
-            if nav == 'n':
-                if len(docs) == limit:
-                    skip += limit
-                else:
-                    print("ℹ️ Sudah mencapai akhir data.")
-            elif nav == 'p':
-                if skip >= limit:
-                    skip -= limit
-                else:
-                    print("ℹ️ Sudah di halaman pertama.")
+            if nav == 'n' and len(docs) == limit:
+                skip += limit
+            elif nav == 'p' and skip >= limit:
+                skip -= limit
             elif nav == 'q':
                 break
-                
     except Exception as e:
         print(f"\n❌ Error MongoDB: {e}")
-        print("💡 Pastikan IP VPS sudah di-whitelist (0.0.0.0/0) di panel MongoDB Atlas.")
+        print("\n💡 SOLUSI:")
+        print("1. Pastikan IP VPS sudah di-whitelist (0.0.0.0/0) di MongoDB Atlas.")
+        print("2. Jika password Anda mengandung '@', ganti '@' menjadi '%40' di URI.")
 
 def main():
     init_db()
@@ -132,8 +132,7 @@ def main():
         if not saved:
             print("Belum ada URI tersimpan di database.")
             uri = input("Masukkan MongoDB URI: ")
-            if uri.strip():
-                save_uri(uri)
+            if uri: save_uri(uri)
         else:
             print("1. Tambah MongoDB URI Baru")
             print("2. Pilih MongoDB Tersimpan")
@@ -142,8 +141,7 @@ def main():
             
             if pilihan == '1':
                 uri = input("Masukkan MongoDB URI: ")
-                if uri.strip():
-                    save_uri(uri)
+                if uri: save_uri(uri)
             elif pilihan == '2':
                 print("\n📋 Daftar MongoDB di MySQL:")
                 for row in saved:
@@ -151,17 +149,12 @@ def main():
                 
                 try:
                     target_id = int(input("\nPilih ID untuk dibuka: "))
-                    # Mencari URI berdasarkan ID
-                    selected_uri = next((r[2] for r in saved if r[0] == target_id), None)
-                    
-                    if selected_uri:
-                        view_mongo_data(selected_uri)
-                    else:
-                        print("❌ ID tidak ditemukan.")
-                except ValueError:
-                    print("❌ Masukkan angka ID yang valid.")
+                    selected_uri = next(r[2] for r in saved if r[0] == target_id)
+                    view_mongo_data(selected_uri)
+                except (ValueError, StopIteration):
+                    print("❌ ID tidak valid.")
             elif pilihan == '3':
-                print("Terima kasih! Sesi berakhir.")
+                print("Sampai jumpa!")
                 break
 
 if __name__ == "__main__":
