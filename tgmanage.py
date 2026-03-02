@@ -1,7 +1,8 @@
 import mysql.connector
 from pyrogram import Client, enums
-import sys
+from pyrogram.raw import functions
 import asyncio
+import sys
 
 # Konfigurasi MySQL sesuai koneksi.php Anda
 DB_CONFIG = {
@@ -12,7 +13,7 @@ DB_CONFIG = {
 }
 
 def init_db():
-    """Inisialisasi tabel jika belum ada."""
+    """Inisialisasi tabel di MySQL."""
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor()
@@ -20,8 +21,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS tg_accounts (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id BIGINT,
-                phone VARCHAR(50),
                 username VARCHAR(255),
+                phone VARCHAR(50),
                 name VARCHAR(255),
                 session_string TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -30,122 +31,128 @@ def init_db():
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"❌ Gagal koneksi database: {e}")
+        print(f"❌ Gagal koneksi MySQL: {e}")
         sys.exit()
 
-async def login_new_account():
-    print("\n--- LOGIN AKUN TELEGRAM BARU ---")
-    ss = input("Masukkan String Session Pyrogram: ").strip()
+async def login_new():
+    print("\n--- LOGIN AKUN BARU ---")
+    ss = input("Masukkan String Session: ").strip()
     if not ss: return
 
     try:
-        async with Client("temp_login", session_string=ss, in_memory=True) as app:
+        async with Client("temp", session_string=ss, in_memory=True) as app:
             me = await app.get_me()
-            full_name = f"{me.first_name} {me.last_name or ''}".strip()
+            name = f"{me.first_name} {me.last_name or ''}"
             
             conn = mysql.connector.connect(**DB_CONFIG)
             cursor = conn.cursor()
-            query = """INSERT INTO tg_accounts (user_id, phone, username, name, session_string) 
+            query = """INSERT INTO tg_accounts (user_id, username, phone, name, session_string) 
                        VALUES (%s, %s, %s, %s, %s)"""
-            cursor.execute(query, (me.id, me.phone_number, me.username, full_name, ss))
+            cursor.execute(query, (me.id, me.username, me.phone_number, name, ss))
             conn.commit()
             conn.close()
-            print(f"✅ Berhasil menyimpan akun: {full_name}")
+            print(f"✅ Akun {name} berhasil disimpan!")
     except Exception as e:
-        print(f"❌ Gagal Login: {e}")
+        print(f"❌ Gagal: {e}")
 
 def get_accounts():
     conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM tg_accounts")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, phone, username, user_id, session_string FROM tg_accounts")
     rows = cursor.fetchall()
     conn.close()
     return rows
 
 async def manage_sessions(app):
-    """Melihat dan mengeluarkan perangkat lain."""
+    """Fungsi untuk melihat dan menghapus perangkat login."""
+    print("\n🔍 Mengambil daftar perangkat...")
     try:
-        sessions = await app.get_authorizations()
-        print("\n--- DAFTAR PERANGKAT AKTIF ---")
-        for i, s in enumerate(sessions):
-            current = "[INI]" if s.address == "0.0.0.0" else "" # Placeholder sederhana
-            print(f"[{i}] {s.device_model} | {s.platform} | {s.ip} {current}")
+        sessions = await app.invoke(functions.account.GetAuthorizations())
+        auths = sessions.authorizations
         
-        print("\n[d] Hapus/Logout Perangkat Lain (Terminate all others)")
-        print("[b] Kembali")
-        opt = input("Pilih: ").lower()
-        
-        if opt == 'd':
-            # Pyrogram terminate_all_others
-            await app.terminate_all_others()
-            print("✅ Berhasil mengeluarkan semua perangkat lain!")
+        print("\n--- DAFTAR PERANGKAT ---")
+        for i, s in enumerate(auths):
+            current = "[INI]" if s.current else ""
+            print(f"{i+1}. {s.device_model} | {s.platform} | {s.ip} {current}")
+            print(f"   Lokasi: {s.country} | Aplikasi: {s.app_name}")
+
+        opt = input("\nMasukkan nomor untuk LOGOUT (atau 'b' kembali): ")
+        if opt.isdigit():
+            idx = int(opt) - 1
+            if 0 <= idx < len(auths):
+                target = auths[idx]
+                if target.current:
+                    print("⚠️ Tidak bisa logout perangkat ini (sedang digunakan script).")
+                else:
+                    confirm = input(f"Konfirmasi logout {target.device_model}? (y/n): ")
+                    if confirm.lower() == 'y':
+                        await app.invoke(functions.account.ResetAuthorization(hash=target.hash))
+                        print("✅ Berhasil mengeluarkan perangkat tersebut.")
     except Exception as e:
-        print(f"❌ Gagal mengelola sesi: {e}")
+        print(f"❌ Gagal akses sesi: {e}")
 
 async def account_menu(acc_data):
-    ss = acc_data['session_string']
-    try:
-        async with Client("temp_manage", session_string=ss, in_memory=True) as app:
-            me = await app.get_me()
-            
-            while True:
-                print("\n" + "="*40)
-                print(f"👤 INFORMASI AKUN")
-                print(f"Nama Lengkap : {me.first_name} {me.last_name or ''}")
-                print(f"User ID      : {me.id}")
-                print(f"Nomor Ponsel : +{me.phone_number}")
-                print(f"Username     : @{me.username or 'Tidak ada'}")
-                print("="*40)
-                print("1. Lihat Kode Masuk (+42777)")
-                print("2. Keluar Dari Device (Manage Sessions)")
-                print("3. Kembali ke Menu Utama")
-                
-                choice = input("\nPilih menu: ")
-                
-                if choice == '1':
-                    print("\n📩 3 Pesan Terakhir dari Telegram Official:")
-                    # ID 777000 adalah Service Notifications
-                    async for msg in app.get_chat_history(777000, limit=3):
-                        print(f"[{msg.date}] -> {msg.text or '[Media/Bukan Teks]'}")
-                
-                elif choice == '2':
-                    await manage_sessions(app)
-                
-                elif choice == '3':
-                    break
-    except Exception as e:
-        print(f"❌ Koneksi ke Telegram gagal: {e}")
+    # acc_data: (id, name, phone, username, user_id, session_string)
+    db_id, name, phone, username, user_id, ss = acc_data
+    
+    while True:
+        print("\n" + "="*40)
+        print(f"👤 INFORMASI AKUN")
+        print(f"Nama     : {name}")
+        print(f"User ID  : {user_id}")
+        print(f"Username : @{username or '-'}")
+        print(f"Phone    : +{phone}")
+        print("="*40)
+        print("1. Lihat Kode Masuk (OTP)")
+        print("2. Lihat Perangkat Login")
+        print("3. Kembali ke Menu Utama")
+        
+        pilih = input("\nPilih menu: ")
+        
+        if pilih in ['1', '2']:
+            try:
+                async with Client("viewer", session_string=ss, in_memory=True) as app:
+                    if pilih == '1':
+                        print("\n📬 3 Pesan Terakhir dari Telegram Official:")
+                        async for msg in app.get_chat_history(777000, limit=3):
+                            print(f"[{msg.date}] -> {msg.text or 'Bukan teks'}")
+                    elif pilih == '2':
+                        await manage_sessions(app)
+            except Exception as e:
+                print(f"❌ Koneksi Telegram Gagal: {e}")
+        elif pilih == '3':
+            break
 
 async def main():
     init_db()
     while True:
-        print("\n🚀 TELEGRAM ACCOUNT MANAGER (SQL BASED)")
+        print("\n🚀 TG-ACCOUNT MANAGER (Pyrogram + MySQL)")
         print("1. Lanjut dengan akun tersimpan")
-        print("2. Login ke akun Telegram (Input String)")
+        print("2. Login akun Telegram (String Session)")
         print("3. Keluar")
         
-        main_opt = input("\nPilih (1/2/3): ")
+        m_pilih = input("\nPilih: ")
         
-        if main_opt == '1':
-            accounts = get_accounts()
-            if not accounts:
-                print("⚠️ Tidak ada akun di database.")
+        if m_pilih == '1':
+            accs = get_accounts()
+            if not accs:
+                print("⚠️ Belum ada akun di database.")
                 continue
             
-            print("\n📋 DAFTAR AKUN TERSIMPAN:")
-            for a in accounts:
-                print(f"  [{a['id']}] {a['name']} (+{a['phone']})")
+            print("\n--- PILIH AKUN ---")
+            for a in accs:
+                print(f"[{a[0]}] {a[1]} (+{a[2]})")
             
             try:
-                target_id = int(input("\nPilih ID Akun: "))
-                selected = next(acc for acc in accounts if acc['id'] == target_id)
-                await account_menu(selected)
-            except (ValueError, StopIteration):
-                print("❌ ID tidak valid.")
+                p_id = int(input("\nMasukkan ID Akun: "))
+                target = next(a for a in accs if a[0] == p_id)
+                await account_menu(target)
+            except:
+                print("❌ Pilihan tidak valid.")
                 
-        elif main_opt == '2':
-            await login_new_account()
-        elif main_opt == '3':
+        elif m_pilih == '2':
+            await login_new()
+        elif m_pilih == '3':
             print("Sampai jumpa!")
             break
 
