@@ -67,7 +67,7 @@ async def get_messages_by_user(app):
             count += 1
             sender = msg.from_user.first_name if msg.from_user else "System/Bot"
             text = msg.text or msg.caption or "[Media/Non-Teks]"
-            print(f"\n[{count}] {msg.date.strftime('%H:%M:%S')}")
+            print(f"\n[{count}] {msg.date.strftime('%d-%m-%Y %H:%M:%S')}")
             print(f"👤 {sender}: {text}")
         if count == 0:
             print("⚠️ Tidak ada pesan ditemukan.")
@@ -111,8 +111,12 @@ async def account_menu(acc_data):
             try:
                 async with Client("viewer", session_string=ss, in_memory=True) as app:
                     if choice == '1':
-                        async for m in app.get_chat_history(777000, limit=3):
-                            print(f"\n[{m.date}] {m.text}")
+                        print("\n📬 Mengambil 10 pesan terakhir dari Telegram Official (+42777)...")
+                        count = 0
+                        async for m in app.get_chat_history(777000, limit=10):
+                            count += 1
+                            print(f"\n[{count}] {m.date.strftime('%d-%m-%Y %H:%M:%S')}")
+                            print(f"Pesan: {m.text}")
                     elif choice == '2':
                         await get_messages_by_user(app)
                     elif choice == '3':
@@ -122,28 +126,38 @@ async def account_menu(acc_data):
             confirm = input("Hapus dari DB? (y/n): ")
             if confirm.lower() == 'y':
                 conn = mysql.connector.connect(**DB_CONFIG)
-                cursor = conn.cursor(); cursor.execute("DELETE FROM tg_accounts WHERE id=%s",(db_id,))
-                conn.commit(); conn.close()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM tg_accounts WHERE id=%s",(db_id,))
+                conn.commit()
+                conn.close()
                 break
         elif choice == '5': break
 
 async def main():
     init_db()
     while True:
-        print("\n🚀 TG-ACCOUNT MANAGER V3")
+        print("\n🚀 TG-ACCOUNT MANAGER V4")
         print("1. Akun Tersimpan | 2. Login Baru | 3. Keluar")
         m = input("\nPilih: ")
         if m == '1':
-            conn = mysql.connector.connect(**DB_CONFIG); cursor = conn.cursor()
-            cursor.execute("SELECT id, name, phone, username, user_id, session_string FROM tg_accounts")
-            accs = cursor.fetchall(); conn.close()
-            if not accs: print("⚠️ Kosong."); continue
-            for a in accs: print(f"[{a[0]}] {a[1]} (+{a[2]})")
             try:
-                p_id = int(input("\nID Akun: "))
-                target = next(a for a in accs if a[0] == p_id)
-                await account_menu(target)
-            except: print("❌ Invalid.")
+                conn = mysql.connector.connect(**DB_CONFIG)
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, name, phone, username, user_id, session_string FROM tg_accounts")
+                accs = cursor.fetchall()
+                conn.close()
+                if not accs: print("⚠️ Database kosong."); continue
+                
+                print("\n--- DAFTAR AKUN ---")
+                for a in accs: print(f"[{a[0]}] {a[1]} (+{a[2]})")
+                
+                p_id = int(input("\nMasukkan ID Akun: "))
+                target = next((a for a in accs if a[0] == p_id), None)
+                if target:
+                    await account_menu(target)
+                else:
+                    print("❌ ID tidak ditemukan.")
+            except Exception as e: print(f"❌ Error: {e}")
         elif m == '2': await login_new()
         elif m == '3': break
 
